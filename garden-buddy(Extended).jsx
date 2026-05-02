@@ -8,6 +8,12 @@ import {
 } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip, Cell } from 'recharts';
 
+// ============== 機能フラグ ==============
+// AI相談（チャット）機能：本番環境では Anthropic API への直接 fetch が CORS で
+// ブロックされるため非表示にしている。バックエンドプロキシ（Cloudflare Workers /
+// Vercel Functions など）を実装したら true に戻せば即復活する。
+const CHAT_ENABLED = false;
+
 // ============== SVG アイコン ==============
 const sBlueberry = (s) => (
   <svg width={s} height={s} viewBox="0 0 32 32">
@@ -2992,7 +2998,7 @@ function BottomNav({ view, onChange }) {
     { id: 'dashboard', icon: Home, label: 'ホーム' },
     { id: 'map', icon: MapIcon, label: 'マップ' },
     { id: 'record', icon: ClipboardList, label: '記録' },
-    { id: 'chat', icon: MessageCircle, label: '相談' },
+    ...(CHAT_ENABLED ? [{ id: 'chat', icon: MessageCircle, label: '相談' }] : []),
     { id: 'settings', icon: SettingsIcon, label: '設定' },
   ];
   return (
@@ -3180,7 +3186,7 @@ export default function GardenBuddy() {
             setSelectedInstanceId={setSelectedInstanceId} setSelectedRecordType={setSelectedRecordType}
             mode={recordMode} setMode={setRecordMode} />
         )}
-        {view === 'chat' && (
+        {CHAT_ENABLED && view === 'chat' && (
           <ChatView data={data} weather={weather}
             chatMessages={chatMessages} setChatMessages={setChatMessages}
             chatSelectedPlantTypeId={chatSelectedPlantTypeId} setChatSelectedPlantTypeId={setChatSelectedPlantTypeId} />
