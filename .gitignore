@@ -1,0 +1,25 @@
+node_modules
+dist
+.vite
+*.log
+.DS_Store
+
+# PWAビルド生成物（vite-plugin-pwaが自動生成、本番ビルドでは含まれる）
+dev-dist
+
+# 生成された PNG アイコン（icon.svg から npm run icons で再生成）
+public/icon-192.png
+public/icon-512.png
+public/icon-512-maskable.png
+public/apple-touch-icon.png
+public/favicon-32.png
+
+# 環境ファイル
+.env.local
+.env.*.local
+
+# Vercel
+.vercel
+
+# Claude Code のローカル専用設定（端末ごとの権限許可リスト）
+.claude/settings.local.json
