@@ -1,39 +1,43 @@
-// public/icon.svg → 各サイズの PNG を public/ に生成する
+// public/icon-source.png（1024x1024 推奨）から各サイズの PWA アイコンを生成
 import sharp from 'sharp';
-import { readFileSync, mkdirSync } from 'node:fs';
+import { mkdirSync, existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = resolve(__dirname, '..');
-const src = resolve(root, 'public/icon.svg');
 const outDir = resolve(root, 'public');
 mkdirSync(outDir, { recursive: true });
 
-const svg = readFileSync(src);
+// 優先順：高解像度PNG → SVG（フォールバック）
+const pngSrc = resolve(outDir, 'icon-source.png');
+const svgSrc = resolve(outDir, 'icon.svg');
+const src = existsSync(pngSrc) ? pngSrc : svgSrc;
+console.log(`source: ${src}`);
 
 const targets = [
-  { name: 'icon-192.png',         size: 192 },
-  { name: 'icon-512.png',         size: 512 },
+  { name: 'icon-192.png',          size: 192 },
+  { name: 'icon-512.png',          size: 512 },
   { name: 'icon-512-maskable.png', size: 512, maskable: true },
-  { name: 'apple-touch-icon.png', size: 180 },  // iOS ホーム画面
-  { name: 'favicon-32.png',       size: 32 },
+  { name: 'apple-touch-icon.png',  size: 180 },  // iOS ホーム画面
+  { name: 'favicon-32.png',        size: 32 },
 ];
 
 for (const t of targets) {
-  // maskable は周囲に safe-zone を確保する。SVGをスケールダウンして余白を入れる。
   if (t.maskable) {
+    // maskable は周囲を safe-zone として確保（80%にスケールダウンし余白に背景色）
     const inner = Math.round(t.size * 0.8);
     const pad = Math.round((t.size - inner) / 2);
-    const inner_buf = await sharp(svg).resize(inner, inner).png().toBuffer();
+    const innerBuf = await sharp(src).resize(inner, inner, { fit: 'contain' }).png().toBuffer();
+    // 背景色は icon の空色（#BFE3F7 系）に近いものを採用
     await sharp({
-      create: { width: t.size, height: t.size, channels: 4, background: { r: 16, g: 185, b: 129, alpha: 1 } },
+      create: { width: t.size, height: t.size, channels: 4, background: { r: 191, g: 227, b: 247, alpha: 1 } },
     })
-      .composite([{ input: inner_buf, top: pad, left: pad }])
+      .composite([{ input: innerBuf, top: pad, left: pad }])
       .png()
       .toFile(resolve(outDir, t.name));
   } else {
-    await sharp(svg).resize(t.size, t.size).png().toFile(resolve(outDir, t.name));
+    await sharp(src).resize(t.size, t.size, { fit: 'contain' }).png().toFile(resolve(outDir, t.name));
   }
   console.log(`✓ ${t.name} (${t.size}x${t.size})`);
 }

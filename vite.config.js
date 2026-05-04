@@ -10,14 +10,13 @@ export default defineConfig({
       // 開発中もService Workerを動かして挙動を確認できるようにする
       devOptions: { enabled: true, type: 'module' },
       includeAssets: [
-        'icon.svg',
         'apple-touch-icon.png',
         'favicon-32.png',
       ],
       manifest: {
-        name: 'Garden Buddy 🌱',
-        short_name: 'Garden Buddy',
-        description: '家庭菜園・園芸の記録とAI相談',
+        name: 'みどりのある暮らし 🌱',
+        short_name: 'みどりのある暮らし',
+        description: '家庭菜園・園芸の記録',
         lang: 'ja',
         theme_color: '#10B981',
         background_color: '#F0FDF4',
