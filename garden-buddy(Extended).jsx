@@ -1504,11 +1504,102 @@ function AddInstanceModal({ open, onClose, onAdd }) {
 }
 
 // ============== ダッシュボード ==============
-function DashboardView({ data, weather, weatherLoading, onInstanceSelect, onAddInstance, onRefreshWeather }) {
+// 今日まだ水やり記録のない鉢を数える
+function countPotsNotWateredToday(instances) {
+  const today = todayStr();
+  return instances.filter(i => !(i.records?.watering || []).some(w => w.date === today)).length;
+}
+
+// 水やり一括記録モーダル
+function WaterAllModal({ open, count, totalCount, onClose, onConfirm }) {
+  if (!open) return null;
+  const allDone = count === 0;
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
+      <div className="relative bg-white rounded-t-3xl sm:rounded-3xl w-full max-w-md shadow-2xl"
+        onClick={e => e.stopPropagation()}>
+        <div className="p-5 space-y-4">
+          <div className="flex items-center justify-between">
+            <h3 className="text-lg font-black text-gray-800 flex items-center gap-2">
+              <Droplets size={22} className="text-sky-500" /> 一括水やり
+            </h3>
+            <button onClick={onClose} className="p-1.5 rounded-full hover:bg-gray-100">
+              <X size={20} className="text-gray-500" />
+            </button>
+          </div>
+          {allDone ? (
+            <div className="bg-emerald-50 rounded-2xl p-4 text-center">
+              <div className="text-3xl mb-1">✅</div>
+              <div className="text-sm font-black text-emerald-800">今日は全鉢に水やり済みです！</div>
+              <div className="text-[11px] text-emerald-700 font-medium mt-1">追加で記録する必要はありません</div>
+            </div>
+          ) : (
+            <>
+              <div className="bg-gradient-to-br from-sky-50 to-blue-50 rounded-2xl p-4 text-center ring-1 ring-sky-100">
+                <div className="text-3xl mb-1">💧</div>
+                <div className="text-sm font-bold text-gray-700">今日まだ水やりされていない</div>
+                <div className="text-3xl font-black text-sky-600 mt-1">{count}<span className="text-base ml-0.5">鉢</span></div>
+                <div className="text-[11px] text-gray-500 font-medium mt-1">に水やりを記録します（{todayStr().replace(/-/g, '/')}）</div>
+              </div>
+              <div className="bg-amber-50 rounded-2xl p-3 text-[11px] text-amber-800 font-medium leading-relaxed">
+                ⚠️ 植物によって最適な水やり間隔は異なります。多肉や乾燥に強い植物がある場合は、個別に記録した方が安全です。
+              </div>
+            </>
+          )}
+          <div className="flex gap-2 pt-1">
+            <button onClick={onClose}
+              className="flex-1 bg-gray-100 text-gray-700 font-black py-3 rounded-2xl active:scale-95 transition-transform">
+              {allDone ? '閉じる' : 'キャンセル'}
+            </button>
+            {!allDone && (
+              <button onClick={onConfirm}
+                className="flex-1 bg-gradient-to-r from-sky-400 to-blue-500 text-white font-black py-3 rounded-2xl shadow-md active:scale-95 transition-transform flex items-center justify-center gap-1.5">
+                <Droplets size={16} strokeWidth={3} />記録する
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DashboardView({ data, setData, weather, weatherLoading, onInstanceSelect, onAddInstance, onRefreshWeather }) {
   const instances = (data.instances || []).filter(i => !i.archived);
   const now = new Date();
   const greeting = now.getHours() < 11 ? 'おはよう' : now.getHours() < 17 ? 'こんにちは' : 'こんばんは';
   const dayJp = ['日', '月', '火', '水', '木', '金', '土'][now.getDay()];
+
+  const [waterAllOpen, setWaterAllOpen] = useState(false);
+  const [toast, setToast] = useState(null);
+  const notWateredCount = countPotsNotWateredToday(instances);
+  const allWateredToday = instances.length > 0 && notWateredCount === 0;
+
+  function handleWaterAll() {
+    const today = todayStr();
+    setData(prev => ({
+      ...prev,
+      instances: (prev.instances || []).map(i => {
+        if (i.archived) return i;
+        const watering = i.records?.watering || [];
+        if (watering.some(w => w.date === today)) return i; // 既に今日水やり済みは飛ばす
+        const newRecord = { id: newId('rec'), date: today, note: '一括水やり' };
+        return {
+          ...i,
+          records: {
+            ...(i.records || {}),
+            watering: [...watering, newRecord].sort((a, b) => a.date.localeCompare(b.date)),
+          },
+        };
+      }),
+    }));
+    const recorded = notWateredCount;
+    setWaterAllOpen(false);
+    setToast(`💧 ${recorded}鉢に水やりを記録しました`);
+    setTimeout(() => setToast(null), 2500);
+  }
+
   return (
     <div className="space-y-4 pb-28 px-4 pt-3">
       <div className="px-1">
@@ -1525,6 +1616,29 @@ function DashboardView({ data, weather, weatherLoading, onInstanceSelect, onAddI
           <h2 className="font-black text-gray-800">うちのみどり</h2>
           <span className="ml-auto text-xs font-bold text-gray-500">{instances.length}鉢</span>
         </div>
+        {instances.length > 0 && (
+          <button onClick={() => setWaterAllOpen(true)}
+            className={`w-full flex items-center justify-center gap-2 py-3 rounded-2xl font-black text-sm shadow-sm active:scale-[0.98] transition-all ${
+              allWateredToday
+                ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200'
+                : 'bg-gradient-to-r from-sky-400 to-blue-500 text-white'
+            }`}>
+            {allWateredToday ? (
+              <>
+                <Check size={16} strokeWidth={3} />
+                今日は全鉢に水やり済み
+              </>
+            ) : (
+              <>
+                <Droplets size={16} strokeWidth={3} />
+                全鉢に水やり
+                <span className="bg-white/30 rounded-full px-2 py-0.5 text-[11px] ml-1">
+                  {notWateredCount}/{instances.length}鉢
+                </span>
+              </>
+            )}
+          </button>
+        )}
         <div className="grid grid-cols-2 gap-3">
           {instances.map(inst => (
             <InstanceCard key={inst.id} instance={inst} onClick={() => onInstanceSelect(inst.id)} />
@@ -1532,6 +1646,17 @@ function DashboardView({ data, weather, weatherLoading, onInstanceSelect, onAddI
           <AddCard onClick={onAddInstance} />
         </div>
       </div>
+
+      <WaterAllModal open={waterAllOpen} count={notWateredCount} totalCount={instances.length}
+        onClose={() => setWaterAllOpen(false)} onConfirm={handleWaterAll} />
+
+      {toast && (
+        <div className="fixed inset-x-0 bottom-24 z-[70] flex justify-center pointer-events-none px-4">
+          <div className="bg-gradient-to-r from-sky-500 to-blue-600 text-white px-5 py-3 rounded-2xl shadow-2xl font-black text-sm animate-bounce">
+            {toast}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -3170,7 +3295,7 @@ export default function GardenBuddy() {
         </div>
 
         {view === 'dashboard' && (
-          <DashboardView data={data} weather={weather} weatherLoading={weatherLoading}
+          <DashboardView data={data} setData={setData} weather={weather} weatherLoading={weatherLoading}
             onInstanceSelect={handleInstanceSelect}
             onAddInstance={() => setShowAddModal(true)}
             onRefreshWeather={loadWeather} />
