@@ -778,11 +778,20 @@ const conditionText = (c) => ({ sunny: '晴れ', cloudy: 'くもり', rainy: '�
 
 // ─── 気象庁（JMA）データ取得 ──────────────────────────
 // 都市名 → JMA向けコード一式
-// 静岡県（220000）の forecast 細分区域：中部=220010 / 伊豆=220020 / 東部=220030 / 西部=220040
-// POP（降水確率）も同じコード。気温・アメダスは観測所コード（浜松=50456、静岡=50331）
+// - prefCode: 気象庁予報の都道府県コード
+// - areaCode / popAreaCode: 予報細分区域コード（POPも同じコードのことが多い）
+// - tempStation: 気温予報の観測所コード（短期＋週間で使用）
+// - amedasPoint: アメダス実況の観測所コード（temp/wind/humidityが取れるType A〜B推奨）
+// 静岡県(220000): 中部=220010 / 伊豆=220020 / 東部=220030 / 西部=220040
+// 東京都(130000): 東京地方=130010 / 伊豆諸島北部=130020 / 同南部=130030 / 小笠原=130040
+//   ※世田谷アメダス(44126)はType Cで雨量のみ → 気温は東京(44132=北の丸公園)で代替
 const JMA_LOCATIONS = {
-  '浜松市': { prefCode: '220000', areaCode: '220040', popAreaCode: '220040', tempStation: '50456', amedasPoint: '50456' },
-  '静岡市': { prefCode: '220000', areaCode: '220010', popAreaCode: '220010', tempStation: '50331', amedasPoint: '50331' },
+  '浜松市':   { prefCode: '220000', areaCode: '220040', popAreaCode: '220040', tempStation: '50456', amedasPoint: '50456' },
+  '静岡市':   { prefCode: '220000', areaCode: '220010', popAreaCode: '220010', tempStation: '50331', amedasPoint: '50331' },
+  '世田谷区': { prefCode: '130000', areaCode: '130010', popAreaCode: '130010', tempStation: '44132', amedasPoint: '44132' },
+  '東京都心': { prefCode: '130000', areaCode: '130010', popAreaCode: '130010', tempStation: '44132', amedasPoint: '44132' },
+  '新宿区':   { prefCode: '130000', areaCode: '130010', popAreaCode: '130010', tempStation: '44132', amedasPoint: '44132' },
+  '八王子市': { prefCode: '130000', areaCode: '130010', popAreaCode: '130010', tempStation: '44132', amedasPoint: '44132' },
 };
 
 const getJMAConfig = (location) => JMA_LOCATIONS[location?.name] || null;
