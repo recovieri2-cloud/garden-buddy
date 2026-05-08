@@ -776,6 +776,197 @@ function codeToCondition(code) {
 
 const conditionText = (c) => ({ sunny: '晴れ', cloudy: 'くもり', rainy: '雨', snowy: '雪' }[c] || 'くもり');
 
+// ─── 気象庁（JMA）データ取得 ──────────────────────────
+// 都市名 → JMA向けコード一式
+// 静岡県（220000）の forecast 細分区域：中部=220010 / 伊豆=220020 / 東部=220030 / 西部=220040
+// POP（降水確率）も同じコード。気温・アメダスは観測所コード（浜松=50456、静岡=50331）
+const JMA_LOCATIONS = {
+  '浜松市': { prefCode: '220000', areaCode: '220040', popAreaCode: '220040', tempStation: '50456', amedasPoint: '50456' },
+  '静岡市': { prefCode: '220000', areaCode: '220010', popAreaCode: '220010', tempStation: '50331', amedasPoint: '50331' },
+};
+
+const getJMAConfig = (location) => JMA_LOCATIONS[location?.name] || null;
+
+// JMA天気コード（100〜499）を簡易4分類に
+const jmaCodeToCondition = (code) => {
+  const c = parseInt(code, 10);
+  if (isNaN(c)) return 'cloudy';
+  if (c >= 100 && c < 200) return 'sunny';
+  if (c >= 200 && c < 300) return 'cloudy';
+  if (c >= 300 && c < 400) return 'rainy';
+  if (c >= 400 && c < 500) return 'snowy';
+  return 'cloudy';
+};
+
+async function fetchJMAForecast(location) {
+  const cfg = getJMAConfig(location);
+  if (!cfg) return null;
+  try {
+    const url = `https://www.jma.go.jp/bosai/forecast/data/forecast/${cfg.prefCode}.json`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('JMA forecast http ' + res.status);
+    const data = await res.json();
+    if (!Array.isArray(data) || data.length < 2) throw new Error('JMA bad shape');
+    const [shortFc, weeklyFc] = data;
+
+    const findTS = (fc, predicate) => fc.timeSeries.find(predicate);
+    const dateOf = (iso) => iso.split('T')[0];
+
+    // 短期予報の各 timeSeries を抽出
+    const shortWeatherTS = findTS(shortFc, ts => ts.areas?.[0]?.weatherCodes);
+    const shortPopTS    = findTS(shortFc, ts => ts.areas?.[0]?.pops && !ts.areas[0].weatherCodes);
+    const shortTempTS   = findTS(shortFc, ts => ts.areas?.[0]?.temps);
+    if (!shortWeatherTS) throw new Error('JMA missing weather series');
+
+    const weatherArea = shortWeatherTS.areas.find(a => a.area.code === cfg.areaCode) || shortWeatherTS.areas[0];
+    const popArea     = shortPopTS?.areas.find(a => a.area.code === cfg.popAreaCode) || shortPopTS?.areas[0];
+    const tempArea    = shortTempTS?.areas.find(a => a.area.code === cfg.tempStation) || shortTempTS?.areas[0];
+
+    // 週間予報
+    const wWeatherTS = findTS(weeklyFc, ts => ts.areas?.[0]?.weatherCodes);
+    const wTempTS    = findTS(weeklyFc, ts => ts.areas?.[0]?.tempsMin || ts.areas?.[0]?.tempsMax);
+    const wWeatherArea = wWeatherTS?.areas[0];
+    const wTempArea    = wTempTS?.areas.find(a => a.area.code === cfg.tempStation) || wTempTS?.areas[0];
+
+    // 日別データを構築
+    const days = [];
+    const seen = new Set();
+
+    for (let i = 0; i < weatherArea.weatherCodes.length; i++) {
+      const date = dateOf(shortWeatherTS.timeDefines[i]);
+      if (seen.has(date)) continue;
+      seen.add(date);
+
+      // 該当日の3時間刻みPOPを集計（最大値＝最も雨が降りそうな時間帯の値）
+      let maxPop = 0;
+      if (popArea && shortPopTS) {
+        const popsForDay = shortPopTS.timeDefines
+          .map((td, idx) => ({ date: dateOf(td), p: parseInt(popArea.pops[idx], 10) }))
+          .filter(x => x.date === date && !isNaN(x.p));
+        if (popsForDay.length) maxPop = Math.max(...popsForDay.map(x => x.p));
+      }
+
+      // JMAの短期気温は「00:00=最低 / 09:00=最高」を timeDefines で示してくる
+      let tempHigh = null, tempLow = null;
+      if (tempArea && shortTempTS) {
+        const tempsForDay = shortTempTS.timeDefines
+          .map((td, idx) => ({ date: dateOf(td), hour: new Date(td).getHours(), v: parseFloat(tempArea.temps[idx]) }))
+          .filter(x => x.date === date && !isNaN(x.v));
+        const lowE  = tempsForDay.find(x => x.hour < 8);
+        const highE = tempsForDay.find(x => x.hour >= 8);
+        if (lowE)  tempLow  = Math.round(lowE.v);
+        if (highE) tempHigh = Math.round(highE.v);
+      }
+
+      days.push({
+        date,
+        condition: jmaCodeToCondition(weatherArea.weatherCodes[i]),
+        weatherText: weatherArea.weathers?.[i]?.replace(/　/g, ' ') || null,
+        windText: weatherArea.winds?.[i]?.replace(/　/g, ' ') || null,
+        tempHigh: tempHigh ?? 20,
+        tempLow:  tempLow  ?? 10,
+        rainProb: maxPop,
+        windSpeed: 3,
+      });
+    }
+
+    // 週間予報で短期にない日を補完（明後日〜7日後）
+    if (wWeatherArea && wWeatherTS) {
+      for (let i = 0; i < wWeatherTS.timeDefines.length; i++) {
+        const date = dateOf(wWeatherTS.timeDefines[i]);
+        if (seen.has(date)) continue;
+        seen.add(date);
+        const code = wWeatherArea.weatherCodes[i];
+        const pop = parseInt(wWeatherArea.pops?.[i], 10) || 0;
+
+        let tempMax = null, tempMin = null;
+        if (wTempArea && wTempTS) {
+          const idx = wTempTS.timeDefines.findIndex(td => dateOf(td) === date);
+          if (idx >= 0) {
+            const tx = parseFloat(wTempArea.tempsMax?.[idx]);
+            const tn = parseFloat(wTempArea.tempsMin?.[idx]);
+            if (!isNaN(tx)) tempMax = Math.round(tx);
+            if (!isNaN(tn)) tempMin = Math.round(tn);
+          }
+        }
+        days.push({
+          date,
+          condition: jmaCodeToCondition(code),
+          weatherText: null,
+          tempHigh: tempMax ?? 20,
+          tempLow:  tempMin ?? 10,
+          rainProb: pop,
+          windSpeed: 3,
+        });
+      }
+    }
+
+    days.sort((a, b) => a.date.localeCompare(b.date));
+
+    // 時間別降水確率（48時間ぶん、3時間刻み）
+    const hourly = popArea && shortPopTS
+      ? shortPopTS.timeDefines.map((td, idx) => ({
+          time: td,
+          pop: parseInt(popArea.pops[idx], 10) || 0,
+        }))
+      : [];
+
+    // 今日が短期予報の先頭にあるはず。なければ days[0] を fallback
+    const todayKey = todayStr();
+    const todayDay = days.find(d => d.date === todayKey) || days[0];
+    const future = days.filter(d => d.date > todayDay.date).slice(0, 3);
+
+    return {
+      today: todayDay,
+      forecast: future,
+      hourly,
+      location: location.name,
+      isReal: true,
+      fetchedAt: new Date().toISOString(),
+      source: 'jma',
+      reportDatetime: shortFc.reportDatetime,
+      publishingOffice: shortFc.publishingOffice,
+    };
+  } catch (e) {
+    console.error('JMA forecast failed:', e);
+    return null;
+  }
+}
+
+// 浜松アメダスなど指定観測所の最新観測値（10分前後の実測）を取る
+// JMAは1ファイルに3時間分（10分刻み）入っており、ファイル名のHHは
+// 0/3/6/9/12/15/18/21 のいずれかに丸める必要がある
+async function fetchAmedasLatest(amedasPoint) {
+  try {
+    const tRes = await fetch('https://www.jma.go.jp/bosai/amedas/data/latest_time.txt');
+    if (!tRes.ok) throw new Error('amedas latest_time http');
+    const latestText = (await tRes.text()).trim();
+    const dt = new Date(latestText);
+    if (isNaN(dt.getTime())) throw new Error('amedas latest_time parse');
+    const yyyy = dt.getFullYear();
+    const mm = String(dt.getMonth() + 1).padStart(2, '0');
+    const dd = String(dt.getDate()).padStart(2, '0');
+    const hhBlock = String(Math.floor(dt.getHours() / 3) * 3).padStart(2, '0');
+    const url = `https://www.jma.go.jp/bosai/amedas/data/point/${amedasPoint}/${yyyy}${mm}${dd}_${hhBlock}.json`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('amedas point http ' + res.status);
+    const data = await res.json();
+    const keys = Object.keys(data).sort();
+    if (!keys.length) return null;
+    const latest = data[keys[keys.length - 1]];
+    const get = (k) => Array.isArray(latest?.[k]) ? latest[k][0] : null;
+    return {
+      time: keys[keys.length - 1],
+      temp: get('temp') !== null ? Math.round(get('temp')) : null,
+      windSpeed: get('wind') !== null ? Math.round(get('wind')) : null,
+      humidity: get('humidity') !== null ? Math.round(get('humidity')) : null,
+    };
+  } catch (e) {
+    console.error('Amedas failed:', e);
+    return null;
+  }
+}
+
 async function fetchWeatherDirect(location) {
   try {
     const url = `https://api.open-meteo.com/v1/forecast?latitude=${location.lat}&longitude=${location.lng}&current=temperature_2m,weather_code,wind_speed_10m&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,wind_speed_10m_max&timezone=Asia/Tokyo&forecast_days=4`;
@@ -873,7 +1064,7 @@ async function fetchWeatherSmart(location) {
   if (!location || typeof location.lat !== 'number' || typeof location.lng !== 'number') {
     location = DEFAULT_LOCATION;
   }
-  const cacheKey = `weather-cache-v3-${location.lat.toFixed(3)}-${location.lng.toFixed(3)}`;
+  const cacheKey = `weather-cache-v4-${location.lat.toFixed(3)}-${location.lng.toFixed(3)}`;
   const todayKey = todayStr();
   const todayMs = (() => { const d = new Date(); d.setHours(0,0,0,0); return d.getTime(); })();
   const futureDayCount = (forecast) => (forecast || []).filter(d => {
@@ -892,6 +1083,25 @@ async function fetchWeatherSmart(location) {
       }
     }
   } catch {}
+
+  // 気象庁を最優先（JMA_LOCATIONS にある都市のみ）
+  const jmaCfg = getJMAConfig(location);
+  if (jmaCfg) {
+    const jma = await fetchJMAForecast(location);
+    if (jma && futureDayCount(jma.forecast) >= 1) {
+      // 浜松アメダスの実測で「いま」の気温・風速を上書き
+      const amedas = await fetchAmedasLatest(jmaCfg.amedasPoint);
+      if (amedas) {
+        if (amedas.temp != null)      jma.today.currentTemp = amedas.temp;
+        if (amedas.windSpeed != null) jma.today.windSpeed = amedas.windSpeed;
+        jma.amedas = amedas;
+      }
+      try { await window.storage.set(cacheKey, JSON.stringify(jma)); } catch {}
+      return jma;
+    }
+  }
+
+  // フォールバック：Open-Meteo → AI → null
   let w = await fetchWeatherDirect(location);
   if (!w) w = await fetchWeatherViaAI(location);
   if (w && futureDayCount(w.forecast) < 3 && w.source !== 'ai') {
@@ -1061,6 +1271,7 @@ function WeatherSymbol({ condition, size = 24 }) {
 function WeatherCard({ weather, loading, onRefresh }) {
   const advice = getWeatherAdvice(weather);
   const t = weather.today;
+  const isJMA = weather.isReal && weather.source === 'jma';
   return (
     <div className="bg-gradient-to-br from-sky-100 via-blue-50 to-indigo-100 rounded-3xl p-5 shadow-sm">
       <div className="flex items-center gap-2 mb-2">
@@ -1068,6 +1279,12 @@ function WeatherCard({ weather, loading, onRefresh }) {
         <div className="text-xs font-black text-sky-700">{weather.location}</div>
         {!weather.isReal && !loading && (
           <span className="text-[9px] bg-amber-200 text-amber-800 px-1.5 py-0.5 rounded-full font-bold">概算（オフライン）</span>
+        )}
+        {isJMA && !loading && (
+          <span className="text-[9px] bg-rose-200 text-rose-900 px-1.5 py-0.5 rounded-full font-bold" title={weather.publishingOffice}>気象庁</span>
+        )}
+        {weather.isReal && weather.source === 'open-meteo' && !loading && (
+          <span className="text-[9px] bg-blue-200 text-blue-800 px-1.5 py-0.5 rounded-full font-bold">Open-Meteo</span>
         )}
         {weather.isReal && weather.source === 'ai' && !loading && (
           <span className="text-[9px] bg-emerald-200 text-emerald-800 px-1.5 py-0.5 rounded-full font-bold">AI取得</span>
@@ -1090,7 +1307,7 @@ function WeatherCard({ weather, loading, onRefresh }) {
                   {t.currentTemp}°<span className="text-[10px] text-gray-400 font-bold ml-1 align-top">いま</span>
                 </div>
                 <div className="text-xs text-gray-600 font-bold mt-1.5">
-                  {conditionText(t.condition)} <span className="text-gray-400">↑{t.tempHigh}° ↓{t.tempLow}°</span>
+                  {t.weatherText || conditionText(t.condition)} <span className="text-gray-400">↑{t.tempHigh}° ↓{t.tempLow}°</span>
                 </div>
               </>
             ) : (
@@ -1098,7 +1315,7 @@ function WeatherCard({ weather, loading, onRefresh }) {
                 <div className="text-3xl font-black text-gray-800 leading-none">
                   {t.tempHigh}°<span className="text-base text-gray-500 font-bold">/{t.tempLow}°</span>
                 </div>
-                <div className="text-sm text-gray-600 font-medium mt-1">{conditionText(t.condition)}</div>
+                <div className="text-sm text-gray-600 font-medium mt-1">{t.weatherText || conditionText(t.condition)}</div>
               </>
             )}
           </div>
@@ -1112,6 +1329,49 @@ function WeatherCard({ weather, loading, onRefresh }) {
           </div>
         </div>
       </div>
+      {weather.hourly && weather.hourly.length > 0 && (
+        <div className="mb-3 bg-white/60 rounded-2xl p-2.5">
+          <div className="text-[10px] font-black text-gray-600 mb-1.5 px-1 flex items-center gap-1">
+            <Droplets size={10} className="text-sky-500" />3時間ごとの降水確率
+          </div>
+          <div className="-mx-1">
+            <div className="scroll-x pb-1"
+              onWheel={(e) => { if (e.deltaY !== 0) { e.currentTarget.scrollLeft += e.deltaY; } }}>
+              <div className="flex gap-1.5 px-1" style={{ width: 'max-content' }}>
+                {(() => {
+                  const todayKey = todayStr();
+                  return weather.hourly.slice(0, 16).map((h, i) => {
+                    const dt = new Date(h.time);
+                    const hr = dt.getHours();
+                    const dateStr = h.time.split('T')[0];
+                    const isToday = dateStr === todayKey;
+                    const isFirstOfDay = i === 0 || weather.hourly[i - 1].time.split('T')[0] !== dateStr;
+                    const popLevel = h.pop >= 60 ? 'high' : h.pop >= 30 ? 'mid' : 'low';
+                    const popClass = popLevel === 'high'
+                      ? 'bg-blue-500 text-white'
+                      : popLevel === 'mid'
+                        ? 'bg-sky-200 text-sky-800'
+                        : 'bg-gray-100 text-gray-500';
+                    return (
+                      <div key={i} className="text-center flex-shrink-0 w-12">
+                        <div className="text-[9px] font-bold text-gray-500 leading-tight">
+                          {isFirstOfDay ? (isToday ? '今日' : dt.getMonth() + 1 + '/' + dt.getDate()) : ' '}
+                        </div>
+                        <div className="text-[10px] font-black text-gray-700">
+                          {String(hr).padStart(2, '0')}–{String((hr + 3) % 24).padStart(2, '0')}
+                        </div>
+                        <div className={`text-[10px] font-black mt-0.5 rounded-full py-0.5 ${popClass}`}>
+                          {h.pop}%
+                        </div>
+                      </div>
+                    );
+                  });
+                })()}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="flex justify-between mb-3 bg-white/60 rounded-2xl p-2.5">
         {(() => {
           const todayMs = (() => { const d = new Date(); d.setHours(0,0,0,0); return d.getTime(); })();
