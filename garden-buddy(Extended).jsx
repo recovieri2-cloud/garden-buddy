@@ -2430,6 +2430,168 @@ function PhotoViewer({ src, onClose }) {
 }
 
 // ============== 記録ビュー ==============
+// ============== 記録編集モーダル ==============
+function RecordEditModal({ record, recordType, open, onClose, onSave }) {
+  const [date, setDate] = useState('');
+  const [amount, setAmount] = useState('');
+  const [unit, setUnit] = useState('');
+  const [note, setNote] = useState('');
+  const [potSize, setPotSize] = useState('');
+  const [photo, setPhoto] = useState(null);
+  const [photoError, setPhotoError] = useState(null);
+
+  useEffect(() => {
+    if (open && record) {
+      setDate(record.date || todayStr());
+      setAmount(record.amount || '');
+      setUnit(record.unit || defaultUnit(recordType?.id));
+      setNote(record.note || '');
+      setPotSize(record.potSize || '');
+      setPhoto(record.photo || null);
+      setPhotoError(null);
+    }
+  }, [open, record, recordType]);
+
+  if (!open || !record || !recordType) return null;
+  const showAmount = recordType.id === 'harvest' || recordType.id === 'fertilizer';
+  const showPotSize = recordType.id === 'repotting';
+
+  async function handlePhotoChange(e) {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setPhotoError(null);
+    try {
+      const dataUrl = await compressImageToDataUrl(file);
+      setPhoto(dataUrl);
+    } catch (err) {
+      console.error(err);
+      setPhotoError('写真の処理に失敗しました');
+    }
+  }
+
+  function handleSave() {
+    const updates = { date, note: note.trim() };
+    if (showAmount) {
+      updates.amount = amount || '0';
+      updates.unit = unit || defaultUnit(recordType.id);
+    }
+    if (showPotSize) {
+      updates.potSize = potSize;
+    }
+    updates.photo = photo; // null なら写真削除、新DataURLなら差し替え
+    onSave(updates);
+    onClose();
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
+      <div className="relative bg-white rounded-t-3xl sm:rounded-3xl w-full max-w-md max-h-[92vh] overflow-y-auto shadow-2xl"
+        onClick={e => e.stopPropagation()}>
+        <div className="p-5 space-y-4">
+          <div className="flex items-center justify-between">
+            <h3 className="text-lg font-black text-gray-800 flex items-center gap-2">
+              <Edit3 size={20} className="text-emerald-500" />{recordType.name}を編集
+            </h3>
+            <button onClick={onClose} className="p-1.5 rounded-full hover:bg-gray-100">
+              <X size={20} className="text-gray-500" />
+            </button>
+          </div>
+
+          <div>
+            <label className="text-xs font-bold text-gray-600 block mb-1.5 flex items-center gap-1.5">
+              <CalendarIcon size={13} className="text-gray-500" />日付
+            </label>
+            <input type="date" value={date} onChange={e => setDate(e.target.value)} max={todayStr()}
+              className="w-full px-4 py-3 bg-gray-50 rounded-2xl text-gray-800 font-bold focus:outline-none focus:ring-2 focus:ring-emerald-300" />
+          </div>
+
+          {showAmount && (
+            <div>
+              <label className="text-xs font-bold text-gray-600 block mb-1.5">{recordType.id === 'harvest' ? '収穫量' : '量'}</label>
+              <div className="flex gap-2">
+                <input type="number" inputMode="decimal" value={amount} onChange={e => setAmount(e.target.value)}
+                  placeholder="0"
+                  className="flex-1 px-4 py-3 bg-gray-50 rounded-2xl text-gray-800 font-bold focus:outline-none focus:ring-2 focus:ring-emerald-300" />
+                <input type="text" value={unit} onChange={e => setUnit(e.target.value)} placeholder={defaultUnit(recordType.id)}
+                  className="w-24 px-3 py-3 bg-gray-50 rounded-2xl text-gray-800 font-bold focus:outline-none focus:ring-2 focus:ring-emerald-300" />
+              </div>
+            </div>
+          )}
+
+          {showPotSize && (
+            <div>
+              <label className="text-xs font-bold text-gray-600 block mb-1.5 flex items-center gap-1.5">
+                <span style={{ display: 'inline-flex' }}>{sPot(13)}</span>新しい鉢サイズ
+              </label>
+              <input type="text" value={potSize} onChange={e => setPotSize(e.target.value)} placeholder="例: 7号、30cm"
+                className="w-full px-4 py-3 bg-gray-50 rounded-2xl text-gray-800 font-bold focus:outline-none focus:ring-2 focus:ring-emerald-300" />
+            </div>
+          )}
+
+          <div>
+            <label className="text-xs font-bold text-gray-600 block mb-1.5 flex items-center gap-1.5">
+              <StickyNote size={13} className="text-amber-500" />メモ
+            </label>
+            <textarea value={note} onChange={e => setNote(e.target.value)} rows="2"
+              placeholder="自由メモ（任意）"
+              className="w-full px-4 py-2.5 bg-gray-50 rounded-2xl text-gray-800 font-medium text-sm focus:outline-none focus:ring-2 focus:ring-emerald-300 resize-none" />
+          </div>
+
+          <div>
+            <label className="text-xs font-bold text-gray-600 mb-1.5 flex items-center gap-1.5">
+              <Camera size={13} className="text-cyan-500" />写真
+            </label>
+            {photo ? (
+              <div className="relative">
+                <img src={photo} alt="" className="w-full rounded-2xl object-cover border border-gray-200" style={{ maxHeight: '240px' }} />
+                <button onClick={() => setPhoto(null)}
+                  className="absolute top-2 right-2 bg-white rounded-full p-1.5 shadow-md hover:bg-red-50 active:scale-90 transition">
+                  <X size={16} className="text-red-500" />
+                </button>
+                <label className="absolute bottom-2 right-2 bg-white rounded-full px-3 py-1.5 shadow-md hover:bg-gray-50 active:scale-95 transition cursor-pointer text-[11px] font-black text-gray-700 flex items-center gap-1">
+                  <ImageIcon size={12} />差し替え
+                  <input type="file" accept="image/*" className="hidden" onChange={handlePhotoChange} />
+                </label>
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 gap-2">
+                <label className="block">
+                  <div className="w-full rounded-2xl p-3 text-center cursor-pointer border-2 border-dashed bg-cyan-50 hover:bg-cyan-100 border-cyan-200 transition active:scale-[0.98]">
+                    <div className="flex justify-center mb-1"><Camera size={20} className="text-cyan-600" /></div>
+                    <div className="text-[11px] font-black text-cyan-800">📷 撮影</div>
+                  </div>
+                  <input type="file" accept="image/*" capture="environment" className="hidden" onChange={handlePhotoChange} />
+                </label>
+                <label className="block">
+                  <div className="w-full rounded-2xl p-3 text-center cursor-pointer border-2 border-dashed bg-purple-50 hover:bg-purple-100 border-purple-200 transition active:scale-[0.98]">
+                    <div className="flex justify-center mb-1"><ImageIcon size={20} className="text-purple-600" /></div>
+                    <div className="text-[11px] font-black text-purple-800">🖼 アルバム</div>
+                  </div>
+                  <input type="file" accept="image/*" className="hidden" onChange={handlePhotoChange} />
+                </label>
+              </div>
+            )}
+            {photoError && <div className="text-[10px] text-red-500 mt-1 font-bold">{photoError}</div>}
+          </div>
+
+          <div className="flex gap-2 pt-1">
+            <button onClick={onClose}
+              className="flex-1 bg-gray-100 text-gray-700 font-black py-3 rounded-2xl active:scale-95 transition-transform">
+              キャンセル
+            </button>
+            <button onClick={handleSave}
+              className="flex-1 bg-gradient-to-r from-emerald-400 to-green-500 text-white font-black py-3 rounded-2xl shadow-md active:scale-95 transition-transform flex items-center justify-center gap-1.5">
+              <Check size={16} strokeWidth={3} />保存
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function RecordView({ data, setData, selectedInstanceId, selectedRecordType, setSelectedInstanceId, setSelectedRecordType, mode, setMode }) {
   const allInstances = data.instances || [];
   const activeInstances = allInstances.filter(i => !i.archived);
@@ -2451,6 +2613,7 @@ function RecordView({ data, setData, selectedInstanceId, selectedRecordType, set
   const [savedFlash, setSavedFlash] = useState(false);
   const [confirmDel, setConfirmDel] = useState(null);
   const [viewingPhoto, setViewingPhoto] = useState(null);
+  const [editingRecord, setEditingRecord] = useState(null);
 
   useEffect(() => {
     if (instance && instance.id !== selectedInstanceId) {
@@ -2523,6 +2686,28 @@ function RecordView({ data, setData, selectedInstanceId, selectedRecordType, set
         const newRecords = { ...(i.records || {}) };
         newRecords[recordType.id] = (newRecords[recordType.id] || []).filter(r => r.id !== recordId);
         return { ...i, records: newRecords };
+      }),
+    }));
+  }
+
+  function handleEditSave(recordId, updates) {
+    if (!instance) return;
+    setData(prev => ({
+      ...prev,
+      instances: (prev.instances || []).map(i => {
+        if (i.id !== instance.id) return i;
+        const newRecords = { ...(i.records || {}) };
+        newRecords[recordType.id] = (newRecords[recordType.id] || [])
+          .map(r => r.id === recordId ? { ...r, ...updates } : r)
+          .sort((a, b) => a.date.localeCompare(b.date));
+        const next = { ...i, records: newRecords };
+        // 植え替え記録の鉢サイズを更新したら、鉢自体の potSize も最新に追従
+        if (recordType.id === 'repotting' && updates.potSize) {
+          const all = newRecords.repotting || [];
+          const latest = all[all.length - 1];
+          if (latest) next.potSize = latest.potSize || next.potSize;
+        }
+        return next;
       }),
     }));
   }
@@ -2838,10 +3023,18 @@ function RecordView({ data, setData, selectedInstanceId, selectedRecordType, set
                       </button>
                     </div>
                   ) : (
-                    <button onClick={() => setConfirmDel(r.id)}
-                      className="flex-shrink-0 text-gray-400 hover:text-red-500 p-2 rounded-full hover:bg-red-50 transition-colors active:scale-90">
-                      <X size={18} />
-                    </button>
+                    <div className="flex gap-0.5 flex-shrink-0">
+                      <button onClick={() => setEditingRecord(r)}
+                        className="text-gray-400 hover:text-emerald-600 p-2 rounded-full hover:bg-emerald-50 transition-colors active:scale-90"
+                        title="編集">
+                        <Edit3 size={16} />
+                      </button>
+                      <button onClick={() => setConfirmDel(r.id)}
+                        className="text-gray-400 hover:text-red-500 p-2 rounded-full hover:bg-red-50 transition-colors active:scale-90"
+                        title="削除">
+                        <X size={18} />
+                      </button>
+                    </div>
                   )
                 )}
               </div>
@@ -2854,6 +3047,13 @@ function RecordView({ data, setData, selectedInstanceId, selectedRecordType, set
       </div>
 
       <PhotoViewer src={viewingPhoto} onClose={() => setViewingPhoto(null)} />
+      <RecordEditModal
+        record={editingRecord}
+        recordType={recordType}
+        open={!!editingRecord}
+        onClose={() => setEditingRecord(null)}
+        onSave={(updates) => editingRecord && handleEditSave(editingRecord.id, updates)}
+      />
     </div>
   );
 }
