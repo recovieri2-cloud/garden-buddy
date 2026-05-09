@@ -4,7 +4,7 @@ import {
   CloudSun, Cloud, Wind, Droplets, Calendar as CalendarIcon,
   Download, Upload, Trash2, Sparkles, TrendingUp, X, Leaf, Plus, Edit3, Check, MapPin, StickyNote,
   Map as MapIcon, MessageCircle, Send, Camera, RefreshCw, Archive, ArrowLeft, GripVertical,
-  Search, ChevronDown, ChevronRight,
+  Search, ChevronDown, ChevronRight, Image as ImageIcon,
 } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip, Cell } from 'recharts';
 
@@ -2761,16 +2761,28 @@ function RecordView({ data, setData, selectedInstanceId, selectedRecordType, set
                 </button>
               </div>
             ) : (
-              <label className="block">
-                <div className="w-full rounded-2xl p-6 text-center cursor-pointer border-2 border-dashed bg-gray-50 hover:bg-gray-100 border-gray-300 transition active:scale-[0.98]">
-                  <div className="flex justify-center mb-2">
-                    <Camera size={28} className="text-gray-400" />
+              <div className="grid grid-cols-2 gap-2">
+                <label className="block">
+                  <div className="w-full rounded-2xl p-4 text-center cursor-pointer border-2 border-dashed bg-cyan-50 hover:bg-cyan-100 border-cyan-200 transition active:scale-[0.98]">
+                    <div className="flex justify-center mb-1.5">
+                      <Camera size={24} className="text-cyan-600" />
+                    </div>
+                    <div className="text-xs font-black text-cyan-800">📷 撮影</div>
+                    <div className="text-[10px] text-cyan-600 mt-0.5 font-medium">カメラを起動</div>
                   </div>
-                  <div className="text-xs font-black text-gray-600">📷 写真を撮影 / 選択</div>
-                  <div className="text-[10px] text-gray-400 mt-1 font-medium">タップしてカメラ起動 / アルバムから選択</div>
-                </div>
-                <input type="file" accept="image/*" capture="environment" className="hidden" onChange={handlePhotoChange} />
-              </label>
+                  <input type="file" accept="image/*" capture="environment" className="hidden" onChange={handlePhotoChange} />
+                </label>
+                <label className="block">
+                  <div className="w-full rounded-2xl p-4 text-center cursor-pointer border-2 border-dashed bg-purple-50 hover:bg-purple-100 border-purple-200 transition active:scale-[0.98]">
+                    <div className="flex justify-center mb-1.5">
+                      <ImageIcon size={24} className="text-purple-600" />
+                    </div>
+                    <div className="text-xs font-black text-purple-800">🖼 アルバム</div>
+                    <div className="text-[10px] text-purple-600 mt-0.5 font-medium">写真を選択</div>
+                  </div>
+                  <input type="file" accept="image/*" className="hidden" onChange={handlePhotoChange} />
+                </label>
+              </div>
             )}
             {photoError && <div className="text-[10px] text-red-500 mt-1 font-bold">{photoError}</div>}
           </div>
