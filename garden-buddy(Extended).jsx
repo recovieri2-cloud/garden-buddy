@@ -846,12 +846,20 @@ async function fetchJMAForecast(location) {
       if (seen.has(date)) continue;
       seen.add(date);
 
-      // 該当日の3時間刻みPOPを集計（最大値＝最も雨が降りそうな時間帯の値）
-      let maxPop = 0;
+      // 該当日の3時間刻みPOPを「昼間(6-18時)」「夜間(それ以外)」で別々に集計
+      let popDay = 0, popNight = 0, maxPop = 0;
       if (popArea && shortPopTS) {
         const popsForDay = shortPopTS.timeDefines
-          .map((td, idx) => ({ date: dateOf(td), p: parseInt(popArea.pops[idx], 10) }))
+          .map((td, idx) => ({
+            date: dateOf(td),
+            hour: new Date(td).getHours(),
+            p: parseInt(popArea.pops[idx], 10),
+          }))
           .filter(x => x.date === date && !isNaN(x.p));
+        const dayVals = popsForDay.filter(x => x.hour >= 6 && x.hour < 18).map(x => x.p);
+        const nightVals = popsForDay.filter(x => x.hour < 6 || x.hour >= 18).map(x => x.p);
+        if (dayVals.length) popDay = Math.max(...dayVals);
+        if (nightVals.length) popNight = Math.max(...nightVals);
         if (popsForDay.length) maxPop = Math.max(...popsForDay.map(x => x.p));
       }
 
@@ -875,7 +883,10 @@ async function fetchJMAForecast(location) {
         tempHigh: tempHigh ?? 20,
         tempLow:  tempLow  ?? 10,
         rainProb: maxPop,
+        popDaytime: popDay,
+        popNighttime: popNight,
         windSpeed: 3,
+        sourceDay: 'jma',
       });
     }
 
@@ -887,6 +898,7 @@ async function fetchJMAForecast(location) {
         seen.add(date);
         const code = wWeatherArea.weatherCodes[i];
         const pop = parseInt(wWeatherArea.pops?.[i], 10) || 0;
+        const reliability = wWeatherArea.reliabilities?.[i] || null;
 
         let tempMax = null, tempMin = null;
         if (wTempArea && wTempTS) {
@@ -905,7 +917,8 @@ async function fetchJMAForecast(location) {
           tempHigh: tempMax ?? 20,
           tempLow:  tempMin ?? 10,
           rainProb: pop,
-          windSpeed: 3,
+          reliability,
+          sourceDay: 'jma-weekly',
         });
       }
     }
@@ -972,6 +985,88 @@ async function fetchAmedasLatest(amedasPoint) {
     };
   } catch (e) {
     console.error('Amedas failed:', e);
+    return null;
+  }
+}
+
+// WMO weather code（ECMWF/MSM/Open-Meteo共通）を日本語の自然言語文に変換
+function wmoCodeToText(code) {
+  const c = parseInt(code, 10);
+  if (isNaN(c)) return null;
+  if (c === 0) return '快晴';
+  if (c === 1) return 'ほぼ晴れ';
+  if (c === 2) return '晴れ時々くもり';
+  if (c === 3) return 'くもり';
+  if (c >= 45 && c <= 48) return '霧';
+  if (c >= 51 && c <= 55) return '霧雨';
+  if (c >= 56 && c <= 57) return '凍る霧雨';
+  if (c === 61) return '弱い雨';
+  if (c === 63) return '雨';
+  if (c === 65) return '強い雨';
+  if (c >= 66 && c <= 67) return '凍る雨';
+  if (c === 71) return '弱い雪';
+  if (c === 73) return '雪';
+  if (c === 75) return '強い雪';
+  if (c === 77) return '霧雪';
+  if (c >= 80 && c <= 82) return 'にわか雨';
+  if (c >= 85 && c <= 86) return 'にわか雪';
+  if (c === 95) return '雷雨';
+  if (c >= 96 && c <= 99) return '雷雨（強）';
+  return null;
+}
+
+// ─── Open-Meteo経由で時間別予報を取得 ───
+// 日本国内ではOpen-Meteoのbest_match(デフォルト)が JMA MSM/GSMをベースに動くため
+// 別途 models=jma_msm を指定する必要はなく、POPが取得できる利点もある
+async function fetchMSMHourly(location) {
+  try {
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${location.lat}&longitude=${location.lng}&hourly=temperature_2m,weather_code,precipitation_probability&timezone=Asia/Tokyo&forecast_days=2`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('hourly http ' + res.status);
+    const data = await res.json();
+    const h = data.hourly;
+    if (!h?.time?.length) throw new Error('hourly empty');
+    // 「いま」より未来の時間だけ抽出（過去の予報値は不要）
+    const nowMs = Date.now();
+    const startIdx = h.time.findIndex(t => new Date(t).getTime() >= nowMs);
+    const from = startIdx >= 0 ? startIdx : 0;
+    return h.time.slice(from).map((t, i) => {
+      const idx = i + from;
+      return {
+        time: t,
+        temp: Math.round(h.temperature_2m?.[idx] ?? 0),
+        condition: codeToCondition(h.weather_code?.[idx]),
+        weatherCode: h.weather_code?.[idx],
+        pop: h.precipitation_probability?.[idx] ?? 0,
+      };
+    });
+  } catch (e) {
+    console.error('hourly failed:', e);
+    return null;
+  }
+}
+
+// ─── Open-Meteo経由でECMWF（中期予報の世界最高峰）の日別予報を取得 ───
+async function fetchECMWFDaily(location) {
+  try {
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${location.lat}&longitude=${location.lng}&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,precipitation_probability_mean&timezone=Asia/Tokyo&forecast_days=10&models=ecmwf_ifs025`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('ECMWF http ' + res.status);
+    const data = await res.json();
+    const d = data.daily;
+    if (!d?.time?.length) throw new Error('ECMWF empty');
+    return d.time.map((date, i) => ({
+      date,
+      condition: codeToCondition(d.weather_code?.[i]),
+      weatherCode: d.weather_code?.[i],
+      weatherText: wmoCodeToText(d.weather_code?.[i]),
+      tempHigh: Math.round(d.temperature_2m_max?.[i] ?? 20),
+      tempLow:  Math.round(d.temperature_2m_min?.[i] ?? 10),
+      rainProb: d.precipitation_probability_max?.[i] ?? 0,
+      rainProbMean: d.precipitation_probability_mean?.[i] ?? 0,
+    }));
+  } catch (e) {
+    console.error('ECMWF failed:', e);
     return null;
   }
 }
@@ -1069,11 +1164,30 @@ condition は: sunny=晴れ系, cloudy=曇り系, rainy=雨, snowy=雪 から選
   }
 }
 
+// 直近のJMA予報発表時刻（5:00 / 11:00 / 17:00 JST）を返す。
+// fetchedAt がこの時刻より前なら古いキャッシュとみなして再取得する。
+function lastJMAPublishTime() {
+  const now = new Date();
+  const hours = [17, 11, 5];
+  for (const h of hours) {
+    if (now.getHours() >= h) {
+      const t = new Date(now);
+      t.setHours(h, 0, 0, 0);
+      return t;
+    }
+  }
+  // 0:00〜4:59 の間は昨日の17:00を採用
+  const y = new Date(now);
+  y.setDate(y.getDate() - 1);
+  y.setHours(17, 0, 0, 0);
+  return y;
+}
+
 async function fetchWeatherSmart(location) {
   if (!location || typeof location.lat !== 'number' || typeof location.lng !== 'number') {
     location = DEFAULT_LOCATION;
   }
-  const cacheKey = `weather-cache-v4-${location.lat.toFixed(3)}-${location.lng.toFixed(3)}`;
+  const cacheKey = `weather-cache-v5-${location.lat.toFixed(3)}-${location.lng.toFixed(3)}`;
   const todayKey = todayStr();
   const todayMs = (() => { const d = new Date(); d.setHours(0,0,0,0); return d.getTime(); })();
   const futureDayCount = (forecast) => (forecast || []).filter(d => {
@@ -1087,24 +1201,73 @@ async function fetchWeatherSmart(location) {
     if (cached?.value) {
       const w = JSON.parse(cached.value);
       if (w.fetchedAt && w.today?.date === todayKey && futureDayCount(w.forecast) >= 3) {
-        const age = Date.now() - new Date(w.fetchedAt).getTime();
-        if (age < 3 * 3600 * 1000) return w;
+        const fetchedMs = new Date(w.fetchedAt).getTime();
+        const age = Date.now() - fetchedMs;
+        const publishMs = lastJMAPublishTime().getTime();
+        // 3時間以内 かつ 直近のJMA発表時刻より後にfetchされたものだけ有効
+        if (age < 3 * 3600 * 1000 && fetchedMs >= publishMs) return w;
       }
     }
   } catch {}
 
-  // 気象庁を最優先（JMA_LOCATIONS にある都市のみ）
+  // ───── JMA対応都市：3ソース統合（JMA + ECMWF + MSM）─────
   const jmaCfg = getJMAConfig(location);
   if (jmaCfg) {
-    const jma = await fetchJMAForecast(location);
+    // 並列で取得（独立したリクエストなので Promise.all で時間短縮）
+    const [jma, amedas, ecmwf, hourly] = await Promise.all([
+      fetchJMAForecast(location),
+      fetchAmedasLatest(jmaCfg.amedasPoint),
+      fetchECMWFDaily(location),
+      fetchMSMHourly(location),
+    ]);
+
     if (jma && futureDayCount(jma.forecast) >= 1) {
-      // 浜松アメダスの実測で「いま」の気温・風速を上書き
-      const amedas = await fetchAmedasLatest(jmaCfg.amedasPoint);
+      // アメダス実測で「いま」を上書き
       if (amedas) {
         if (amedas.temp != null)      jma.today.currentTemp = amedas.temp;
         if (amedas.windSpeed != null) jma.today.windSpeed = amedas.windSpeed;
         jma.amedas = amedas;
       }
+
+      // 3日後以降を ECMWF で上書き（中期予報の精度向上）
+      if (ecmwf && ecmwf.length > 0) {
+        const ecmwfByDate = Object.fromEntries(ecmwf.map(d => [d.date, d]));
+        const merged = jma.forecast.map((d, idx) => {
+          // JMA短期は通常2日分（明日・明後日）のみ強い。それより先（i>=2）はECMWF優先
+          if (idx >= 2 && ecmwfByDate[d.date]) {
+            const e = ecmwfByDate[d.date];
+            return {
+              ...d,
+              tempHigh: e.tempHigh,
+              tempLow: e.tempLow,
+              condition: e.condition,
+              weatherText: e.weatherText || d.weatherText,
+              rainProb: e.rainProb,
+              rainProbMean: e.rainProbMean,
+              sourceDay: 'ecmwf',
+            };
+          }
+          return d;
+        });
+        // ECMWFにあって JMA forecast にない後ろ側の日付を追加（最大 4日後まで）
+        const seenDates = new Set([jma.today.date, ...merged.map(m => m.date)]);
+        for (const e of ecmwf) {
+          if (seenDates.has(e.date)) continue;
+          if (merged.length >= 4) break;
+          merged.push({
+            ...e,
+            sourceDay: 'ecmwf',
+          });
+        }
+        jma.forecast = merged.slice(0, 4);
+      }
+
+      // 時間別予報（次の24時間）
+      if (hourly && hourly.length > 0) {
+        jma.msmHourly = hourly.slice(0, 24);
+      }
+
+      jma.fetchedAt = new Date().toISOString();
       try { await window.storage.set(cacheKey, JSON.stringify(jma)); } catch {}
       return jma;
     }
@@ -1281,16 +1444,33 @@ function WeatherCard({ weather, loading, onRefresh }) {
   const advice = getWeatherAdvice(weather);
   const t = weather.today;
   const isJMA = weather.isReal && weather.source === 'jma';
+  const hasECMWF = isJMA && (weather.forecast || []).some(d => d.sourceDay === 'ecmwf');
+  const hasMSM = isJMA && weather.msmHourly && weather.msmHourly.length > 0;
+
+  // 更新時刻の短い表記（HH:MM）
+  const fetchedShort = (() => {
+    if (!weather.fetchedAt) return null;
+    const d = new Date(weather.fetchedAt);
+    if (isNaN(d.getTime())) return null;
+    return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+  })();
+
   return (
     <div className="bg-gradient-to-br from-sky-100 via-blue-50 to-indigo-100 rounded-3xl p-5 shadow-sm">
-      <div className="flex items-center gap-2 mb-2">
+      <div className="flex items-center gap-2 mb-2 flex-wrap">
         <MapPin size={12} className="text-sky-700" />
         <div className="text-xs font-black text-sky-700">{weather.location}</div>
         {!weather.isReal && !loading && (
           <span className="text-[9px] bg-amber-200 text-amber-800 px-1.5 py-0.5 rounded-full font-bold">概算（オフライン）</span>
         )}
         {isJMA && !loading && (
-          <span className="text-[9px] bg-rose-200 text-rose-900 px-1.5 py-0.5 rounded-full font-bold" title={weather.publishingOffice}>気象庁</span>
+          <span className="text-[9px] bg-rose-200 text-rose-900 px-1.5 py-0.5 rounded-full font-bold" title={weather.publishingOffice}>🏛 JMA</span>
+        )}
+        {hasECMWF && !loading && (
+          <span className="text-[9px] bg-indigo-200 text-indigo-900 px-1.5 py-0.5 rounded-full font-bold" title="ECMWF（欧州中期予報センター）">🇪🇺 ECMWF</span>
+        )}
+        {hasMSM && !loading && (
+          <span className="text-[9px] bg-cyan-200 text-cyan-900 px-1.5 py-0.5 rounded-full font-bold" title="JMA MSM 5km格子">🗾 MSM</span>
         )}
         {weather.isReal && weather.source === 'open-meteo' && !loading && (
           <span className="text-[9px] bg-blue-200 text-blue-800 px-1.5 py-0.5 rounded-full font-bold">Open-Meteo</span>
@@ -1301,10 +1481,15 @@ function WeatherCard({ weather, loading, onRefresh }) {
         {loading && (
           <span className="text-[9px] bg-blue-200 text-blue-800 px-1.5 py-0.5 rounded-full font-bold animate-pulse">取得中...</span>
         )}
-        <button onClick={onRefresh} disabled={loading}
-          className="ml-auto text-sky-600 hover:text-sky-800 disabled:opacity-50 active:scale-95 transition">
-          <RefreshCw size={13} className={loading ? 'animate-spin' : ''} />
-        </button>
+        <div className="ml-auto flex items-center gap-1.5">
+          {fetchedShort && !loading && (
+            <span className="text-[9px] text-sky-700/70 font-bold">更新 {fetchedShort}</span>
+          )}
+          <button onClick={onRefresh} disabled={loading}
+            className="text-sky-600 hover:text-sky-800 disabled:opacity-50 active:scale-95 transition">
+            <RefreshCw size={13} className={loading ? 'animate-spin' : ''} />
+          </button>
+        </div>
       </div>
       <div className="flex items-start justify-between mb-3">
         <div className="flex items-center gap-3">
@@ -1338,23 +1523,23 @@ function WeatherCard({ weather, loading, onRefresh }) {
           </div>
         </div>
       </div>
-      {weather.hourly && weather.hourly.length > 0 && (
+      {hasMSM && (
         <div className="mb-3 bg-white/60 rounded-2xl p-2.5">
           <div className="text-[10px] font-black text-gray-600 mb-1.5 px-1 flex items-center gap-1">
-            <Droplets size={10} className="text-sky-500" />3時間ごとの降水確率
+            🗾 1時間ごとの予報（MSM 5km格子）<span className="text-gray-400 font-medium">次の24h</span>
           </div>
           <div className="-mx-1">
             <div className="scroll-x pb-1"
               onWheel={(e) => { if (e.deltaY !== 0) { e.currentTarget.scrollLeft += e.deltaY; } }}>
-              <div className="flex gap-1.5 px-1" style={{ width: 'max-content' }}>
+              <div className="flex gap-1 px-1" style={{ width: 'max-content' }}>
                 {(() => {
                   const todayKey = todayStr();
-                  return weather.hourly.slice(0, 16).map((h, i) => {
+                  return weather.msmHourly.map((h, i) => {
                     const dt = new Date(h.time);
                     const hr = dt.getHours();
                     const dateStr = h.time.split('T')[0];
                     const isToday = dateStr === todayKey;
-                    const isFirstOfDay = i === 0 || weather.hourly[i - 1].time.split('T')[0] !== dateStr;
+                    const isFirstOfDay = i === 0 || weather.msmHourly[i - 1].time.split('T')[0] !== dateStr;
                     const popLevel = h.pop >= 60 ? 'high' : h.pop >= 30 ? 'mid' : 'low';
                     const popClass = popLevel === 'high'
                       ? 'bg-blue-500 text-white'
@@ -1362,14 +1547,14 @@ function WeatherCard({ weather, loading, onRefresh }) {
                         ? 'bg-sky-200 text-sky-800'
                         : 'bg-gray-100 text-gray-500';
                     return (
-                      <div key={i} className="text-center flex-shrink-0 w-12">
-                        <div className="text-[9px] font-bold text-gray-500 leading-tight">
-                          {isFirstOfDay ? (isToday ? '今日' : dt.getMonth() + 1 + '/' + dt.getDate()) : ' '}
+                      <div key={i} className="text-center flex-shrink-0 w-10">
+                        <div className="text-[9px] font-bold text-gray-500 leading-tight h-3">
+                          {isFirstOfDay ? (isToday ? '今日' : (dt.getMonth() + 1) + '/' + dt.getDate()) : ''}
                         </div>
-                        <div className="text-[10px] font-black text-gray-700">
-                          {String(hr).padStart(2, '0')}–{String((hr + 3) % 24).padStart(2, '0')}
-                        </div>
-                        <div className={`text-[10px] font-black mt-0.5 rounded-full py-0.5 ${popClass}`}>
+                        <div className="text-[10px] font-black text-gray-700">{String(hr).padStart(2, '0')}時</div>
+                        <div className="my-0.5 flex justify-center"><WeatherSymbol condition={h.condition} size={18} /></div>
+                        <div className="text-[10px] font-bold text-gray-600">{h.temp}°</div>
+                        <div className={`text-[9px] font-black mt-0.5 rounded-full py-0.5 ${popClass}`}>
                           {h.pop}%
                         </div>
                       </div>
@@ -1381,7 +1566,7 @@ function WeatherCard({ weather, loading, onRefresh }) {
           </div>
         </div>
       )}
-      <div className="flex justify-between mb-3 bg-white/60 rounded-2xl p-2.5">
+      <div className="space-y-1.5 mb-3">
         {(() => {
           const todayMs = (() => { const d = new Date(); d.setHours(0,0,0,0); return d.getTime(); })();
           const dayDiff = (s) => {
@@ -1391,22 +1576,60 @@ function WeatherCard({ weather, loading, onRefresh }) {
             d.setHours(0,0,0,0);
             return Math.round((d.getTime() - todayMs) / 86400000);
           };
+          const dowJp = ['日','月','火','水','木','金','土'];
           const future = (weather.forecast || [])
             .map(d => ({ ...d, _diff: dayDiff(d.date) }))
             .filter(d => d._diff !== null && d._diff >= 1)
             .filter((d, i, arr) => arr.findIndex(x => x._diff === d._diff) === i)
             .sort((a, b) => a._diff - b._diff)
-            .slice(0, 3);
+            .slice(0, 4);
           return future.map((d) => {
-            const dateLabel = formatDate(d.date);
-            const label = d._diff === 1 ? <>明日<span className="text-gray-400">({dateLabel})</span></>
-              : d._diff === 2 ? <>明後日<span className="text-gray-400">({dateLabel})</span></>
-              : dateLabel;
+            const dt = new Date(d.date);
+            const dow = dowJp[dt.getDay()];
+            const dateLabel = `${dt.getMonth() + 1}/${dt.getDate()}(${dow})`;
+            const dayLabel = d._diff === 1 ? '明日' : d._diff === 2 ? '明後日' : dateLabel;
+            const isECMWF = d.sourceDay === 'ecmwf';
+            const isJMAWeekly = d.sourceDay === 'jma-weekly';
+            const isJMA = d.sourceDay === 'jma';
+            const hasSplit = typeof d.popDaytime === 'number';
             return (
-              <div key={d._diff} className="text-center flex-1">
-                <div className="text-[10px] font-bold text-gray-600 mb-1 leading-tight">{label}</div>
-                <div className="flex justify-center mb-1"><WeatherSymbol condition={d.condition} size={22} /></div>
-                <div className="text-xs font-bold text-gray-700">{d.tempHigh}°<span className="text-gray-400">/{d.tempLow}°</span></div>
+              <div key={d._diff} className="bg-white/70 rounded-2xl p-2.5 flex items-center gap-2.5">
+                <div className="flex-shrink-0"><WeatherSymbol condition={d.condition} size={28} /></div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="text-[11px] font-black text-gray-800">{dayLabel}</span>
+                    {d._diff <= 2 && d._diff >= 1 && (
+                      <span className="text-[9px] text-gray-400 font-bold">{dt.getMonth() + 1}/{dt.getDate()}({dow})</span>
+                    )}
+                    {d.reliability && (
+                      <span className={`text-[9px] font-black px-1.5 py-0.5 rounded-full ${
+                        d.reliability === 'A' ? 'bg-emerald-200 text-emerald-800'
+                          : d.reliability === 'B' ? 'bg-amber-200 text-amber-800'
+                          : 'bg-gray-200 text-gray-600'
+                      }`} title="JMA 信頼度">信頼度{d.reliability}</span>
+                    )}
+                    {isECMWF && (
+                      <span className="text-[8px] bg-indigo-100 text-indigo-700 px-1 py-0.5 rounded-full font-bold">ECMWF</span>
+                    )}
+                    {(isJMA || isJMAWeekly) && (
+                      <span className="text-[8px] bg-rose-100 text-rose-700 px-1 py-0.5 rounded-full font-bold">JMA</span>
+                    )}
+                  </div>
+                  {d.weatherText && (
+                    <div className="text-[10px] text-gray-600 font-medium truncate">{d.weatherText}</div>
+                  )}
+                </div>
+                <div className="flex-shrink-0 text-right">
+                  <div className="text-sm font-black text-gray-800 leading-none">
+                    {d.tempHigh}°<span className="text-[11px] text-gray-400 font-bold">/{d.tempLow}°</span>
+                  </div>
+                  <div className="text-[10px] font-bold text-sky-600 mt-0.5 leading-tight">
+                    {hasSplit
+                      ? <>昼<span className="font-black">{d.popDaytime}%</span> / 夜<span className="font-black">{d.popNighttime}%</span></>
+                      : <>💧 {d.rainProb}%</>
+                    }
+                  </div>
+                </div>
               </div>
             );
           });
